@@ -1,0 +1,555 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Multi-tenant Architecture Models
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  domain      String?
+  logo        String?
+  isActive    Boolean  @default(true)
+  subscription String  @default("individual") // individual, team, vsb, smb, mmb, lmb, enterprise
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relationships
+  users       User[]
+  companies   Company[]
+  
+  @@map("tenants")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  username    String?  @unique
+  firstName   String
+  lastName    String
+  password    String
+  role        UserRole @default(USER)
+  isActive    Boolean  @default(true)
+  lastLogin   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  createdJournalEntries JournalEntry[]
+  createdInvoices       Invoice[]
+  createdPayments       Payment[]
+  
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AP_MANAGER
+  AP_CLERK
+  AR_MANAGER
+  AR_CLERK
+  ACCOUNTANT
+  FINANCE_MANAGER
+  USER
+}
+
+model Company {
+  id                String   @id @default(cuid())
+  name              String
+  legalName         String?
+  registrationNo    String?
+  taxId             String?
+  email             String?
+  phone             String?
+  website           String?
+  
+  // Address
+  address           String?
+  city              String?
+  state             String?
+  country           String   @default("US")
+  zipCode           String?
+  
+  // Financial Settings
+  baseCurrency      String   @default("USD")
+  fiscalYearStart   DateTime @default("2024-01-01T00:00:00Z")
+  
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Multi-tenant
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  accounts          Account[]
+  vendors           Vendor[]
+  customers         Customer[]
+  journalEntries    JournalEntry[]
+  invoices          Invoice[]
+  bills             Bill[]
+  payments          Payment[]
+  bankAccounts      BankAccount[]
+  financialPeriods  FinancialPeriod[]
+  
+  @@map("companies")
+}
+
+// General Ledger Models
+
+model AccountType {
+  id          String   @id @default(cuid())
+  name        String
+  category    AccountCategory
+  normalSide  String   // "DEBIT" or "CREDIT"
+  description String?
+  isActive    Boolean  @default(true)
+  
+  accounts    Account[]
+  
+  @@map("account_types")
+}
+
+enum AccountCategory {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+model Account {
+  id              String      @id @default(cuid())
+  code            String
+  name            String
+  description     String?
+  accountTypeId   String
+  accountType     AccountType @relation(fields: [accountTypeId], references: [id])
+  parentAccountId String?
+  parentAccount   Account?    @relation("AccountHierarchy", fields: [parentAccountId], references: [id])
+  childAccounts   Account[]   @relation("AccountHierarchy")
+  
+  // Balances
+  openingBalance  Decimal     @default(0) @db.Decimal(15,2)
+  currentBalance  Decimal     @default(0) @db.Decimal(15,2)
+  
+  // Settings
+  isActive        Boolean     @default(true)
+  isSystem        Boolean     @default(false)
+  allowPosting    Boolean     @default(true)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Multi-tenant
+  companyId       String
+  company         Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  journalLineItems JournalLineItem[]
+  
+  @@unique([companyId, code])
+  @@map("accounts")
+}
+
+model JournalEntry {
+  id          String   @id @default(cuid())
+  entryNumber String
+  date        DateTime
+  reference   String?
+  description String
+  totalAmount Decimal  @db.Decimal(15,2)
+  isPosted    Boolean  @default(false)
+  isRecurring Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+
+  // Relationships
+  lineItems   JournalLineItem[]
+  
+  @@unique([companyId, entryNumber])
+  @@map("journal_entries")
+}
+
+model JournalLineItem {
+  id              String       @id @default(cuid())
+  description     String?
+  debitAmount     Decimal      @default(0) @db.Decimal(15,2)
+  creditAmount    Decimal      @default(0) @db.Decimal(15,2)
+  
+  journalEntryId  String
+  journalEntry    JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  
+  accountId       String
+  account         Account      @relation(fields: [accountId], references: [id])
+  
+  @@map("journal_line_items")
+}
+
+// Vendors & Customers Models
+
+model Vendor {
+  id              String   @id @default(cuid())
+  vendorNumber    String
+  name            String
+  contactPerson   String?
+  email           String?
+  phone           String?
+  website         String?
+  
+  // Address
+  billingAddress  String?
+  shippingAddress String?
+  city            String?
+  state           String?
+  country         String   @default("US")
+  zipCode         String?
+  
+  // Payment Terms
+  paymentTerms    String?  // "NET_30", "NET_60", etc.
+  creditLimit     Decimal? @db.Decimal(15,2)
+  taxId           String?
+  
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Multi-tenant
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  bills           Bill[]
+  payments        Payment[]
+  
+  @@unique([companyId, vendorNumber])
+  @@map("vendors")
+}
+
+model Customer {
+  id               String   @id @default(cuid())
+  customerNumber   String
+  name             String
+  contactPerson    String?
+  email            String?
+  phone            String?
+  website          String?
+  
+  // Address
+  billingAddress   String?
+  shippingAddress  String?
+  city             String?
+  state            String?
+  country          String   @default("US")
+  zipCode          String?
+  
+  // Credit Terms
+  paymentTerms     String?  // "NET_30", "NET_60", etc.
+  creditLimit      Decimal? @db.Decimal(15,2)
+  taxId            String?
+  
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Multi-tenant
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  invoices         Invoice[]
+  payments         Payment[]
+  
+  @@unique([companyId, customerNumber])
+  @@map("customers")
+}
+
+// Invoice & Bill Models
+
+model Invoice {
+  id            String      @id @default(cuid())
+  invoiceNumber String
+  date          DateTime
+  dueDate       DateTime
+  subtotal      Decimal     @db.Decimal(15,2)
+  taxAmount     Decimal     @default(0) @db.Decimal(15,2)
+  totalAmount   Decimal     @db.Decimal(15,2)
+  paidAmount    Decimal     @default(0) @db.Decimal(15,2)
+  balanceAmount Decimal     @db.Decimal(15,2)
+  status        InvoiceStatus @default(DRAFT)
+  
+  notes         String?
+  terms         String?
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Multi-tenant
+  companyId     String
+  company       Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  customerId    String
+  customer      Customer    @relation(fields: [customerId], references: [id])
+  
+  createdById   String
+  createdBy     User        @relation(fields: [createdById], references: [id])
+
+  // Relationships
+  lineItems     InvoiceLineItem[]
+  payments      Payment[]
+  
+  @@unique([companyId, invoiceNumber])
+  @@map("invoices")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  VIEWED
+  PARTIAL
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model InvoiceLineItem {
+  id          String  @id @default(cuid())
+  description String
+  quantity    Decimal @default(1) @db.Decimal(10,3)
+  unitPrice   Decimal @db.Decimal(15,2)
+  taxRate     Decimal @default(0) @db.Decimal(5,2)
+  lineTotal   Decimal @db.Decimal(15,2)
+  
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  
+  @@map("invoice_line_items")
+}
+
+model Bill {
+  id            String     @id @default(cuid())
+  billNumber    String
+  vendorRef     String?
+  date          DateTime
+  dueDate       DateTime
+  subtotal      Decimal    @db.Decimal(15,2)
+  taxAmount     Decimal    @default(0) @db.Decimal(15,2)
+  totalAmount   Decimal    @db.Decimal(15,2)
+  paidAmount    Decimal    @default(0) @db.Decimal(15,2)
+  balanceAmount Decimal    @db.Decimal(15,2)
+  status        BillStatus @default(DRAFT)
+  
+  notes         String?
+  
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Multi-tenant
+  companyId     String
+  company       Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  vendorId      String
+  vendor        Vendor     @relation(fields: [vendorId], references: [id])
+
+  // Relationships
+  lineItems     BillLineItem[]
+  payments      Payment[]
+  
+  @@unique([companyId, billNumber])
+  @@map("bills")
+}
+
+enum BillStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PARTIAL
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model BillLineItem {
+  id          String  @id @default(cuid())
+  description String
+  quantity    Decimal @default(1) @db.Decimal(10,3)
+  unitPrice   Decimal @db.Decimal(15,2)
+  taxRate     Decimal @default(0) @db.Decimal(5,2)
+  lineTotal   Decimal @db.Decimal(15,2)
+  
+  billId      String
+  bill        Bill    @relation(fields: [billId], references: [id], onDelete: Cascade)
+  
+  @@map("bill_line_items")
+}
+
+// Payment Models
+
+model Payment {
+  id            String        @id @default(cuid())
+  paymentNumber String
+  date          DateTime
+  amount        Decimal       @db.Decimal(15,2)
+  method        PaymentMethod
+  reference     String?
+  notes         String?
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Multi-tenant
+  companyId     String
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  // Can be for customer or vendor
+  customerId    String?
+  customer      Customer?     @relation(fields: [customerId], references: [id])
+  
+  vendorId      String?
+  vendor        Vendor?       @relation(fields: [vendorId], references: [id])
+  
+  // Can be applied to multiple invoices/bills
+  invoiceId     String?
+  invoice       Invoice?      @relation(fields: [invoiceId], references: [id])
+  
+  billId        String?
+  bill          Bill?         @relation(fields: [billId], references: [id])
+  
+  bankAccountId String?
+  bankAccount   BankAccount?  @relation(fields: [bankAccountId], references: [id])
+  
+  createdById   String
+  createdBy     User        @relation(fields: [createdById], references: [id])
+  
+  @@unique([companyId, paymentNumber])
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  BANK_TRANSFER
+  CREDIT_CARD
+  DEBIT_CARD
+  DIGITAL_WALLET
+  NEFT
+  RTGS
+  UPI
+}
+
+// Bank Management Models
+
+model BankAccount {
+  id            String   @id @default(cuid())
+  accountName   String
+  accountNumber String
+  bankName      String
+  branchName    String?
+  ifscCode      String?
+  swiftCode     String?
+  routingNumber String?
+  accountType   String   @default("CHECKING") // CHECKING, SAVINGS, CREDIT
+  
+  currentBalance Decimal @default(0) @db.Decimal(15,2)
+  
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Multi-tenant
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Relationships
+  payments      Payment[]
+  transactions  BankTransaction[]
+  
+  @@unique([companyId, accountNumber])
+  @@map("bank_accounts")
+}
+
+model BankTransaction {
+  id              String      @id @default(cuid())
+  date            DateTime
+  description     String
+  reference       String?
+  debitAmount     Decimal     @default(0) @db.Decimal(15,2)
+  creditAmount    Decimal     @default(0) @db.Decimal(15,2)
+  balance         Decimal     @db.Decimal(15,2)
+  isReconciled    Boolean     @default(false)
+  reconciledAt    DateTime?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  bankAccountId   String
+  bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  
+  @@map("bank_transactions")
+}
+
+// Financial Period Models
+
+model FinancialPeriod {
+  id          String   @id @default(cuid())
+  name        String
+  startDate   DateTime
+  endDate     DateTime
+  status      PeriodStatus @default(OPEN)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  @@map("financial_periods")
+}
+
+enum PeriodStatus {
+  OPEN
+  CLOSED
+  LOCKED
+}
+
+// Audit Trail Model
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  tableName   String
+  recordId    String
+  action      String   // CREATE, UPDATE, DELETE
+  oldValues   Json?
+  newValues   Json?
+  timestamp   DateTime @default(now())
+  
+  userId      String
+  ipAddress   String?
+  userAgent   String?
+  
+  @@map("audit_logs")
+}
